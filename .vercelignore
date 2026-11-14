@@ -1,0 +1,4 @@
+# No hace falta subirlo a Vercel (la web y api/ sí)
+videos/
+tools/cache/
+docs/CONTACTOS_CREADORES.md

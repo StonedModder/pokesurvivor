@@ -513,3 +513,19 @@ guitarra punteada, bajo, pad, lead y batería, con reverb). Cero ficheros.
 - Más tarde (10-10): subir de nivel otra vez la mitad de rápido (experiencia
   por nivel ×4 respecto al original) y tickets ×1 más raros (1/400 en vez de 1/260).
   Misiones de nivel 8/12/15 y logros de nivel 15 y 30 (antes 12/16/20, 20 y 40).
+
+**2026-11-14 · la nube pasa de Firebase a Vercel + Postgres**
+- API propia en una sola función de Vercel (`api/v1.js`, código en
+  `server/api.js`) con Postgres (Neon). Las tablas se crean solas.
+- Cuentas de nombre + contraseña (scrypt en el servidor, token de sesión en el
+  navegador). Sin "Entrar con Google".
+- Partida: versión numerada; si otro ordenador guardó antes, el servidor
+  devuelve la suya y el navegador la fusiona con las mismas reglas de siempre.
+- Amigos, "en línea" e invitaciones: una pregunta cada 30 s. Salas: tablas en
+  Postgres, se pregunta cada 1,5 s (4 s en partida); la señalización de WebRTC
+  y el relé van por la API.
+- Ranking: el servidor decide las tablas y valida las marcas (lo que hacían las
+  reglas de Firestore). Borrar la cuenta borra todo lo suyo de una vez.
+- Probado con Postgres local: pruebas de la API (`npm run test:api`) y dos
+  navegadores (cuentas, fusión, amigos, invitación, sala, WebRTC directo, relé,
+  ranking y borrado).

@@ -30,17 +30,11 @@ En el repositorio: **Settings → Pages** →
 
 En uno o dos minutos estará en <https://jpter78.github.io/pokesurvivor/>.
 
-## 4. Conectar con Firebase
+## 4. Conectar con la nube (Vercel)
 
-Si ya seguiste [FIREBASE.md](FIREBASE.md), añade `jpter78.github.io` a los
-**dominios autorizados** de Authentication (paso 5) y sube el
-`firebase-config.js` rellenado:
-
-```
-git add js/core/firebase-config.js
-git commit -m "Conectar con Firebase"
-git push
-```
+Lo más sencillo es publicar el juego directamente en Vercel, con la API y la
+base de datos: [VERCEL.md](VERCEL.md). Si prefieres seguir en GitHub Pages,
+la API puede ir aparte en Vercel (paso 3 de VERCEL.md).
 
 ## 5. Que salga en Google
 

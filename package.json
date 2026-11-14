@@ -1,0 +1,14 @@
+{
+  "name": "pokesurvivor",
+  "private": true,
+  "description": "PokéSurvivor: juego en HTML/JS + API para Vercel (api/v1.js) con Postgres",
+  "scripts": {
+    "dev": "node server/dev.js",
+    "test:api": "node server/test.js",
+    "bundle": "node tools/build.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "postgres": "3.4.9"
+  }
+}

@@ -33,7 +33,6 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PokéSurvivor">
-<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
 <link rel="preload" href="assets/fonts/PixelifySans.ttf" as="font" type="font/ttf" crossorigin>
 <!-- Datos estructurados para Google (tipo de página: videojuego gratuito) -->
 <script type="application/ld+json">
@@ -237,9 +236,8 @@
     <p>Código fuente: <a id="legal-repo" href="#" target="_blank" rel="noopener"></a></p>
     <h3>Privacidad</h3>
     <p>Si creas una cuenta, guardamos tu nombre de jugador y tu partida (colección, monedas,
-      mejoras y estadísticas) en Google Firebase para que puedas seguir en cualquier ordenador.
-      Si entras con Google, Firebase guarda también tu correo de Google para identificarte
-      (nunca se enseña a otros jugadores).
+      mejoras y estadísticas) en nuestro servidor (alojado en Vercel, con una base de datos Postgres)
+      para que puedas seguir en cualquier ordenador. La contraseña se guarda cifrada: nadie puede leerla.
       No usamos tus datos para nada más, ni los compartimos, ni hay publicidad ni seguimiento.
       Como invitado no se guarda nada fuera de tu navegador.</p>
     <p>Amigos y ranking: tu <b>apodo</b> es público para otros jugadores. Guardamos tu lista de
@@ -247,7 +245,7 @@
     <p>Partidas en grupo: tu navegador se conecta <b>directamente</b> con el de tus compañeros
       (como en una videollamada), así que cada uno puede llegar a ver la dirección IP del otro.
       Juega en grupo sólo con gente que conozcas. Si la conexión directa no es posible, la partida
-      pasa por los servidores de Firebase.</p>
+      pasa por nuestro servidor.</p>
     <p>Puedes borrar tu cuenta cuando quieras (se borran también tu apodo, tus amigos y tus marcas):</p>
     <div class="row">
       <button class="btn small" id="legal-delete">Borrar mi cuenta y mi partida</button>
@@ -492,6 +490,6 @@
 </section>
 
 <!-- datos generados -->
-<script defer src="js/app.min.js?v=c3994430c8"></script>
+<script defer src="js/app.min.js?v=0445dd081a"></script>
 </body>
 </html>

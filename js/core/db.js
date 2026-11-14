@@ -1,23 +1,21 @@
-/* ============ db.js — base de datos: Firebase (nube) o local ============
+/* ============ db.js — base de datos: la nube (API propia) o local ============
  * TODO el acceso a datos persistentes pasa por aquí. El resto del juego sólo
  * usa G.DB.*.
  *
  * Dos modos (se decide en ready()):
  *
- *   NUBE  (Firebase Authentication + Cloud Firestore)
- *     Si hay configuración en js/core/firebase-config.js y el juego se abre
+ *   NUBE  (la API del juego en Vercel: api/v1.js + Postgres)
+ *     Si hay dirección de la API en js/core/cloud-config.js y el juego se abre
  *     desde una web (http/https, también localhost). La partida se guarda en
- *     saves/{uid} y se puede seguir en cualquier ordenador.
- *       - Usuario + contraseña: Firebase pide un email, así que el nombre se
- *         convierte en uno interno (nunca se le envía nada).
- *       - Cuenta de Google.
+ *     el servidor y se puede seguir en cualquier ordenador. Las cuentas son de
+ *     nombre + contraseña; el navegador guarda un token de sesión.
  *     Además se guarda una copia local para poder jugar sin conexión; al
  *     sincronizar se FUSIONA (ver merge): las colecciones se unen y nunca se
  *     pierde un Pokémon ni un shiny.
  *
  *   LOCAL (localStorage)
- *     Si no hay configuración o se abre con doble clic (file://). Igual que
- *     antes: cuentas y partidas sólo en este navegador.
+ *     Si no hay configuración, el servidor no responde o se abre con doble
+ *     clic (file://). Cuentas y partidas sólo en este navegador.
  *       ps.accounts      { clave: { name, salt, hash, created } }
  *       ps.save.<clave>  partida de esa cuenta
  *       ps.session       última cuenta con sesión iniciada
@@ -27,15 +25,14 @@
 G.DB = (() => {
   const K_ACC = 'ps.accounts', K_SES = 'ps.session', K_SAVE = 'ps.save.';
   const K_CLOUD = 'ps.cloud.', K_MIGRATED = 'ps.migrated.';
+  const K_TOKEN = 'ps.token';          // { token, uid } de la sesión en la nube
   const VERSION = 3;
   const START_COINS = 500;
-  const SDK = 'https://www.gstatic.com/firebasejs/13.0.0/';
-  const NAME_DOMAIN = 'jugadores.pokesurvivor.net';   // sólo para el email interno
 
   let mode = 'local';       // 'cloud' | 'local'
   let localReason = '';     // por qué no hay nube: 'file' | 'config' | 'error'
   let user = null;          // nombre visible
-  let key = null;           // clave local (minúsculas) o uid de Firebase
+  let key = null;           // clave local (minúsculas) o uid de la nube
   let guest = false;
   let save = null;
   let storageOk = true;
@@ -240,15 +237,15 @@ G.DB = (() => {
     return s ? { key: k, save: migrate(s, acc.name) } : null;
   }
 
+
   // =====================================================================
   //                               MODO NUBE
   // =====================================================================
 
-  let auth = null, fs = null, rtdb = null, uid = null, unlisten = null;
+  let apiUrl = null, token = null, uid = null, ver = 0;
   let pushT = 0, retryT = 0, pending = false, pushing = null, lastPush = 0;
-  // Como mucho una subida cada 5 min (el plan gratuito de Firebase tiene un
-  // cupo diario de escrituras); lo que cuesta algo (gacha, mejoras), a los
-  // 30 s. La copia local se guarda siempre al momento (y se fusiona con la
+  // Como mucho una subida cada 5 min; lo que cuesta algo (gacha, mejoras), a
+  // los 30 s. La copia local se guarda siempre al momento (y se fusiona con la
   // nube al volver a entrar), y al ocultar o cerrar la pestaña se sube lo pendiente.
   const PUSH_GAP = 5 * 60 * 1000, PUSH_GAP_URGENT = 30 * 1000;
   let syncState = 'local';           // 'ok' | 'syncing' | 'pending' | 'offline' | 'local'
@@ -256,70 +253,76 @@ G.DB = (() => {
 
   function setSync(s) { syncState = s; listeners.forEach(fn => { try { fn(s); } catch (e) { /* nada */ } }); }
 
-  function loadScript(src) {
-    return new Promise((res, rej) => {
-      const el = document.createElement('script');
-      el.src = src; el.async = true;
-      el.onload = res; el.onerror = () => rej(new Error('No se pudo cargar ' + src));
-      document.head.appendChild(el);
-    });
+  /**
+   * Llama a la API: POST { op, ...body } con el token de sesión.
+   * Errores: e.code = lo que dice el servidor ('wrong-password'...) o
+   * 'unavailable' si no hay conexión; e.msg = el mensaje para el jugador.
+   */
+  async function api(op, body = {}, opts = {}) {
+    if (!apiUrl) throw Object.assign(new Error('sin nube'), { code: 'unavailable' });
+    const ctl = new AbortController();
+    const tm = setTimeout(() => ctl.abort(), opts.timeout || 15000);
+    const json = JSON.stringify(Object.assign({ op }, body));
+    try {
+      const r = await fetch(apiUrl, {
+        method: 'POST', signal: ctl.signal,
+        headers: Object.assign({ 'content-type': 'application/json' }, token ? { authorization: 'Bearer ' + token } : {}),
+        body: json,
+        // Al cerrar la pestaña: que la petición llegue igual (sólo si es pequeña).
+        keepalive: !!opts.keepalive && json.length < 60000
+      });
+      let j = {};
+      try { j = await r.json(); } catch (e) { /* sin cuerpo */ }
+      if (!r.ok || j.error) {
+        throw Object.assign(new Error(j.msg || j.error || 'HTTP ' + r.status), { code: j.error || (r.status >= 500 ? 'server' : 'http'), status: r.status, msg: j.msg });
+      }
+      return j;
+    } catch (e) {
+      if (e.name === 'AbortError' || e instanceof TypeError) throw Object.assign(new Error('sin conexión'), { code: 'unavailable' });
+      throw e;
+    } finally { clearTimeout(tm); }
+  }
+
+  function setSession(s) {
+    token = s ? s.token : null;
+    if (s) write(K_TOKEN, { token: s.token, uid: s.uid }); else remove(K_TOKEN);
   }
 
   async function initCloud() {
-    const cfg = G.FIREBASE_CONFIG;
+    const url = G.CLOUD_API;
     if (!/^https?:$/.test(location.protocol)) { localReason = 'file'; return false; }
-    if (!cfg || !cfg.apiKey || !cfg.projectId) { localReason = 'config'; return false; }
-    await loadScript(SDK + 'firebase-app-compat.js');
-    await loadScript(SDK + 'firebase-auth-compat.js');
-    await loadScript(SDK + 'firebase-firestore-compat.js');
-    // Base de datos en tiempo real: amigos en línea, invitaciones y salas.
-    if (cfg.databaseURL) await loadScript(SDK + 'firebase-database-compat.js');
-    firebase.initializeApp(cfg);
-    auth = firebase.auth();
-    fs = firebase.firestore();
-    rtdb = cfg.databaseURL ? firebase.database() : null;
-    // Sólo para pruebas: { ..., emulator: true } usa el emulador local de Firebase.
-    if (cfg.emulator) {
-      auth.useEmulator('http://127.0.0.1:9099');
-      fs.useEmulator('127.0.0.1', 8080);
-      if (rtdb) rtdb.useEmulator('127.0.0.1', 9000);
+    if (!url) { localReason = 'config'; return false; }
+    apiUrl = url;
+    const ses = read(K_TOKEN);
+    if (ses && ses.token) token = ses.token;
+    else {
+      // Sin sesión guardada: ¿hay servidor? (p. ej. publicado en una web sin la API)
+      try { await api('ping', {}, { timeout: 5000 }); }
+      catch (e) { apiUrl = null; throw e; }
     }
-    await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
-    auth.languageCode = 'es';
     addEventListener('online', () => { if (pending) pushNow(); });
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && pending) pushNow(); });
-    addEventListener('pagehide', () => { if (pending) pushNow(); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && pending) pushNow(true); });
+    addEventListener('pagehide', () => { if (pending) pushNow(true); });
     return true;
   }
 
-  /** Firebase pide email: el nombre se codifica en uno interno, único y válido. */
-  function nameToEmail(name) {
-    const hex = [...new TextEncoder().encode(name.trim().toLowerCase())].map(b => b.toString(16).padStart(2, '0')).join('');
-    return hex + '@' + NAME_DOMAIN;
-  }
-
-  function displayNameOf(u) {
-    const n = ((u && u.displayName) || 'Entrenador').trim().split(/\s+/)[0].replace(/[^A-Za-z0-9_ñÑáéíóúÁÉÍÓÚ]/g, '');
-    return (n || 'Entrenador').slice(0, 16);
-  }
-
-  const docRef = () => fs.collection('saves').doc(uid);
-  const plain = s => JSON.parse(JSON.stringify(s));      // Firestore no admite undefined
+  const plain = s => JSON.parse(JSON.stringify(s));
 
   /** Abre la partida de la nube de un usuario recién autenticado. */
   async function openCloud(u, opts = {}) {
     uid = u.uid;
     const cached = read(K_CLOUD + uid);
+    ver = read(K_CLOUD + uid + '.ver') || 0;
     let remote = null, online = true;
     try {
-      const snap = await docRef().get();
-      remote = snap.exists ? snap.data().save : null;
+      const r = await api('saveGet');
+      remote = r.save; ver = r.ver;
     } catch (e) {
-      if (!cached) throw e;                // sin conexión y sin copia: no hay nada que abrir
+      if (!cached || e.code !== 'unavailable') throw e;    // sin conexión y sin copia: no hay nada que abrir
       online = false;
     }
     let s = merge(cached && migrate(cached), remote && migrate(remote));
-    if (!s) s = newSave(opts.name || displayNameOf(u));
+    if (!s) s = newSave(opts.name || u.name || 'Entrenador');
     if (opts.legacy) {
       s = merge(s, opts.legacy.save);
       write(K_MIGRATED + opts.legacy.key, uid);
@@ -330,15 +333,12 @@ G.DB = (() => {
     if (online) await pushNow(); else { pending = true; setSync('offline'); scheduleRetry(); }
   }
 
-  /*
-   * Ya no se escucha el documento en vivo (cada cambio costaba una lectura).
-   * Si juegas en dos ordenadores, las partidas se fusionan al entrar y en
-   * cada subida (transacción con merge()).
+  /**
+   * Sube la partida. El servidor sólo la acepta si nadie ha guardado desde la
+   * última versión que vimos; si no, devuelve la suya, se fusiona y se reintenta.
+   * @param leaving  la pestaña se cierra: la petición tiene que salir ya
    */
-  function stopListening() { if (unlisten) { unlisten(); unlisten = null; } }
-
-  /** Sube la partida fusionándola con lo que haya en la nube (transacción). */
-  function pushNow() {
+  function pushNow(leaving = false) {
     if (mode !== 'cloud' || guest || !save || !uid) return Promise.resolve();
     if (pushing) { pending = true; return pushing; }
     clearTimeout(pushT); pushT = 0; pushDue = 0;
@@ -349,23 +349,28 @@ G.DB = (() => {
     pending = false;
     lastPush = Date.now();
     setSync('syncing');
-    let merged = null;
-    const tr = fs.runTransaction(async tx => {
-      const ref = docRef();
-      const snap = await tx.get(ref);
-      const remote = snap.exists ? migrate(snap.data().save) : null;
-      merged = remote ? merge(plain(save), remote) : plain(save);
-      tx.set(ref, { save: merged, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), v: VERSION });
-    });
-    // Si la red se cae a medias, Firestore puede quedarse esperando: tope de 12 s.
-    const timeout = new Promise((_, rej) => setTimeout(() => rej({ code: 'unavailable' }), 12000));
-    pushing = Promise.race([tr, timeout]).then(() => {
-      if (merged && save) { applyInPlace(merged); write(K_CLOUD + uid, save); }
+    let merged = plain(save), conflicted = false;
+    pushing = (async () => {
+      let r = await api('savePut', { save: merged, ver }, { keepalive: leaving });
+      for (let i = 0; r.conflict && i < 4; i++) {
+        conflicted = true;
+        merged = r.save ? merge(plain(save), migrate(r.save)) : plain(save);
+        ver = r.ver;
+        r = await api('savePut', { save: merged, ver });
+      }
+      if (r.conflict) throw Object.assign(new Error('conflicto'), { code: 'conflict' });
+      ver = r.ver;
+      write(K_CLOUD + uid + '.ver', ver);
+    })().then(() => {
+      // Otro ordenador había guardado: lo suyo se une a la partida (sin perder
+      // lo que se haya jugado aquí mientras se subía).
+      if (save && conflicted) { applyInPlace(merge(plain(save), merged)); write(K_CLOUD + uid, save); }
       setSync(pending ? 'pending' : 'ok');
       if (G.UI && G.UI.refreshCoins) G.UI.refreshCoins();
     }).catch(e => {
       console.warn('[DB] no se pudo sincronizar:', e.code || e.message);
       pending = true;
+      if (e.status === 401) { setSync('offline'); return; }       // sesión caducada: al volver a entrar
       setSync(navigator.onLine === false || e.code === 'unavailable' ? 'offline' : 'pending');
       scheduleRetry();
     }).finally(() => {
@@ -385,26 +390,12 @@ G.DB = (() => {
   }
   function scheduleRetry() { clearTimeout(retryT); retryT = setTimeout(() => { if (pending) pushNow(); }, 15000); }
 
-  function authError(e) {
+  function apiError(e) {
+    if (e && e.msg) return e.msg;                 // el servidor ya lo explica
     const c = (e && e.code) || '';
-    const M = {
-      'auth/email-already-in-use': 'Ese nombre ya existe.',
-      'auth/invalid-credential': 'Usuario o contraseña incorrectos.',
-      'auth/invalid-login-credentials': 'Usuario o contraseña incorrectos.',
-      'auth/wrong-password': 'Usuario o contraseña incorrectos.',
-      'auth/user-not-found': 'Usuario o contraseña incorrectos.',
-      'auth/weak-password': 'La contraseña debe tener al menos 6 caracteres.',
-      'auth/too-many-requests': 'Demasiados intentos seguidos. Espera un poco.',
-      'auth/network-request-failed': 'Sin conexión a internet.',
-      'auth/popup-blocked': 'El navegador bloqueó la ventana de Google. Permite las ventanas emergentes.',
-      'auth/unauthorized-domain': 'Este dominio no está autorizado en Firebase (Authentication > Configuración > Dominios autorizados).',
-      'auth/operation-not-allowed': 'Ese método de inicio de sesión no está activado en Firebase.',
-      'auth/requires-recent-login': 'Por seguridad, vuelve a iniciar sesión y repite la operación.',
-      'permission-denied': 'La base de datos rechazó el acceso (revisa las reglas de Firestore).',
-      'unavailable': 'Sin conexión con la base de datos.'
-    };
-    if (c === 'auth/popup-closed-by-user' || c === 'auth/cancelled-popup-request') return '';
-    return M[c] || ('Error: ' + (c || (e && e.message) || 'desconocido'));
+    if (c === 'unavailable') return 'Sin conexión con el servidor.';
+    if (c === 'no-db') return 'El servidor no tiene base de datos configurada.';
+    return 'Error: ' + (c || (e && e.message) || 'desconocido');
   }
 
   // =====================================================================
@@ -420,10 +411,23 @@ G.DB = (() => {
       try { if (await initCloud()) mode = 'cloud'; }
       catch (e) { console.warn('[DB] sin nube:', e.message); localReason = 'error'; mode = 'local'; }
       if (mode === 'local') { setSync('local'); return restoreLocal(); }
-      const u = await new Promise(res => { const off = auth.onAuthStateChanged(x => { off(); res(x); }); });
-      if (!u) return false;
-      try { await openCloud(u); return true; }
-      catch (e) { console.warn('[DB] no se pudo abrir la partida:', e.code || e.message); return false; }
+      if (!token) return false;
+      const ses = read(K_TOKEN) || {};
+      try {
+        let me;
+        try { me = await api('me'); }
+        catch (e) {
+          // Sin conexión: se juega con la copia local y se sube al volver.
+          if (e.code === 'unavailable' && ses.uid && read(K_CLOUD + ses.uid)) me = { uid: ses.uid };
+          else throw e;
+        }
+        await openCloud(me);
+        return true;
+      } catch (e) {
+        console.warn('[DB] no se pudo abrir la partida:', e.code || e.message);
+        if (e.status === 401) setSession(null);
+        return false;
+      }
     })();
     return readyP;
   }
@@ -436,10 +440,11 @@ G.DB = (() => {
     if (mode === 'local') return registerLocal(name, pass);
     try {
       const legacy = await legacySave(name, pass);
-      const cred = await auth.createUserWithEmailAndPassword(nameToEmail(name), pass);
-      await openCloud(cred.user, { name, legacy });
+      const s = await api('register', { name, pass });
+      setSession(s);
+      await openCloud(s, { name, legacy });
       return { ok: true, isNew: !save.partner, imported: !!legacy };
-    } catch (e) { return { ok: false, error: authError(e) }; }
+    } catch (e) { return { ok: false, error: apiError(e) }; }
   }
 
   async function login(name, pass) {
@@ -447,19 +452,15 @@ G.DB = (() => {
     if (mode === 'local') return loginLocal(name, pass);
     try {
       const legacy = await legacySave(name, pass);
-      const cred = await auth.signInWithEmailAndPassword(nameToEmail(name), pass || '');
-      await openCloud(cred.user, { name, legacy });
+      const s = await api('login', { name, pass: pass || '' });
+      setSession(s);
+      await openCloud(s, { name: s.name, legacy });
       return { ok: true, isNew: !save.partner, imported: !!legacy };
-    } catch (e) { return { ok: false, error: authError(e) }; }
+    } catch (e) { return { ok: false, error: apiError(e) }; }
   }
 
   async function loginWithGoogle() {
-    if (mode !== 'cloud') return { ok: false, error: 'Entrar con Google necesita la versión publicada del juego.' };
-    try {
-      const cred = await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
-      await openCloud(cred.user, { name: displayNameOf(cred.user) });
-      return { ok: true, isNew: !save.partner };
-    } catch (e) { return { ok: false, error: authError(e) }; }
+    return { ok: false, error: 'Entrar con Google no está disponible: crea una cuenta con nombre y contraseña.' };
   }
 
   /** Cambia el nombre que se ve en la partida (al elegir apodo). */
@@ -498,14 +499,14 @@ G.DB = (() => {
     for (const fn of leaveHooks) { try { await fn('logout'); } catch (e) { /* nada */ } }
     if (mode === 'cloud' && !guest && save) {
       if (pending) { try { await pushNow(); } catch (e) { /* queda la copia local */ } }
-      stopListening();
-      try { await auth.signOut(); } catch (e) { /* nada */ }
+      await api('logout').catch(() => {});
+      setSession(null);
     } else if (mode === 'local' && !guest) {
       commit();
       remove(K_SES);
     }
     clearTimeout(pushT); clearTimeout(retryT);
-    user = key = save = uid = null; guest = false; pending = false;
+    user = key = save = uid = null; guest = false; pending = false; ver = 0;
     setSync(mode === 'cloud' ? 'ok' : 'local');
   }
 
@@ -522,14 +523,14 @@ G.DB = (() => {
     }
     try {
       clearTimeout(pushT); clearTimeout(retryT); pending = false;
-      stopListening();
       for (const fn of leaveHooks) await fn('delete');
-      await docRef().delete();
-      remove(K_CLOUD + uid);
-      await auth.currentUser.delete();
-      user = key = save = uid = null;
+      // El servidor borra todo lo de la cuenta: partida, apodo, amigos, salas y marcas.
+      await api('deleteAccount');
+      remove(K_CLOUD + uid); remove(K_CLOUD + uid + '.ver');
+      setSession(null);
+      user = key = save = uid = null; ver = 0;
       return { ok: true };
-    } catch (e) { return { ok: false, error: authError(e) }; }
+    } catch (e) { return { ok: false, error: apiError(e) }; }
   }
 
   // ---------------- helpers de partida ----------------
@@ -562,12 +563,16 @@ G.DB = (() => {
     owns, grant, ownsShiny, grantShiny, merge, setName, upgradesOf,
     onSync(fn) { listeners.add(fn); },
     onLeave(fn) { leaveHooks.push(fn); },
-    /** Acceso de bajo nivel para los módulos de red (sólo en modo nube). */
-    get fb() { return mode === 'cloud' ? { auth, fs, rtdb, uid, emulator: !!(G.FIREBASE_CONFIG || {}).emulator } : null; },
+    /** Llamada a la API del servidor (para los módulos de red; sólo en modo nube). */
+    api,
+    /** Tu id de jugador en la nube. */
+    get uid() { return mode === 'cloud' ? uid : null; },
     /** ¿Está disponible lo online (amigos, ranking, multijugador)? */
     get online() { return mode === 'cloud' && !guest && !!uid && !!save; },
-    /** ¿La cuenta es de usuario y contraseña (no de Google)? */
-    get nameAccount() { return !!(auth && auth.currentUser && (auth.currentUser.email || '').endsWith('@' + NAME_DOMAIN)); },
+    /** Las cuentas de la nube son todas de nombre y contraseña. */
+    get nameAccount() { return mode === 'cloud' && !!uid; },
+    /** ¿Se puede entrar con Google? (no con la API propia) */
+    google: false,
     get mode() { return mode; },
     get localReason() { return localReason; },
     get syncState() { return syncState; },

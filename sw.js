@@ -3,7 +3,7 @@
  *   llega al momento; si no hay conexión, la última copia guardada.
  * - Sprites, iconos y fuente: no cambian nunca, se sirven de la caché
  *   (se van guardando según se usan: no se descarga todo de golpe).
- * - Firebase y demás servicios de fuera no se tocan.
+ * - La API (POST /api/v1) y los servicios de fuera no se tocan.
  */
 const CODE = 'ps-code-v1', ART = 'ps-art-v1';
 

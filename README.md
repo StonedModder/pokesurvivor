@@ -65,9 +65,11 @@ jefe, la captura de un shiny salvaje y un shiny en el gacha.
 
 ## Guardado en la nube y publicación
 
-- **Base de datos (Firebase):** cuentas con nombre + contraseña o Google, y la
-  partida se sigue en cualquier ordenador. Pasos en [docs/FIREBASE.md](docs/FIREBASE.md).
-  Sin configurar, el juego guarda sólo en el navegador, como antes.
+- **Base de datos (Vercel + Postgres):** cuentas con nombre + contraseña, y la
+  partida se sigue en cualquier ordenador. El juego y su API (`api/v1.js`) se
+  publican juntos en Vercel; la base de datos es Postgres (Neon, desde el
+  Marketplace de Vercel). Pasos en [docs/VERCEL.md](docs/VERCEL.md).
+  Sin base de datos, el juego guarda sólo en el navegador, como antes.
 - **Jugar con amigos (hasta 4) y ranking:** con cuenta en la nube, menú
   **Amigos** (añadir por apodo, invitar a tu sala) y **Ranking** (tiempo
   aguantado: solo o grupo, de hoy a histórico, amigos, por Pokémon).
@@ -75,8 +77,8 @@ jefe, la captura de un shiny salvaje y un shiny en el gacha.
 - Si se juega en dos ordenadores a la vez o sin conexión, las partidas se
   **fusionan**: las colecciones se unen (nunca se pierde un Pokémon ni un
   shiny), mejoras y estadísticas se quedan con el máximo, y monedas y
-  compañero con la versión más reciente. Los cambios de otro ordenador llegan
-  en directo.
+  compañero con la versión más reciente. Los cambios de otro ordenador se
+  fusionan al entrar y en cada subida.
 
 ## Licencia
 

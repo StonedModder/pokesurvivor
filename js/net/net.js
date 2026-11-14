@@ -4,10 +4,11 @@
  *
  * Dos caminos, a la vez:
  *   directo  WebRTC (canal de datos entre navegadores, sin pasar por ningún
- *            servidor). La negociación (señalización) va por la base de datos.
+ *            servidor). La negociación (señalización) va por el servidor.
  *   relé     Si la red no deja conectar directo (algunos routers y datos
- *            móviles), los mensajes van por la Realtime Database:
- *            rooms/{sala}/q/{destinatario}/{id}. Más lento, pero funciona.
+ *            móviles), los mensajes van por el servidor (roomSend / roomPoll
+ *            de server/api.js): se juntan y se mandan cada 150 ms, y se
+ *            recogen cuando G.Social pregunta por la sala. Más lento, pero funciona.
  *
  * Se envía por el canal directo si está abierto; si no, por el relé. El que
  * recibe escucha los dos, así que no hace falta ponerse de acuerdo.
@@ -21,8 +22,9 @@ G.Net = (() => {
                { urls: 'stun:stun.cloudflare.com:3478' }];
   const DIRECT_TIMEOUT = 9000;     // ms para conseguir canal directo antes de usar el relé
 
-  let rtdb = null, uid = null, roomId = null, isHost = false, hostUid = null;
-  let qref = null;
+  const FLUSH = 150;               // ms: los mensajes por el relé se mandan juntos
+  let uid = null, roomId = null, isHost = false, hostUid = null;
+  let outbox = [], flushT = 0;
   const peers = new Map();         // uid -> { pc, dc, mode, timer }
   const handlers = new Set(), peerHandlers = new Set();
   let stats = { sent: 0, recv: 0, relaySent: 0 };
@@ -37,19 +39,8 @@ G.Net = (() => {
   function open(id, host, hostId) {
     if (roomId === id) return;
     close();
-    const fb = G.DB.fb;
-    rtdb = fb.rtdb; uid = fb.uid;
+    uid = G.DB.uid;
     roomId = id; isHost = host; hostUid = hostId;
-    qref = rtdb.ref('rooms/' + id + '/q/' + uid);
-    qref.on('child_added', s => {
-      const raw = s.val();
-      s.ref.remove().catch(() => {});
-      let m;
-      try { m = JSON.parse(raw); } catch (e) { return; }
-      if (!m || !m.f) return;
-      if (m.sig) onSignal(m.f, m.sig);
-      else deliver(m.f, m.d);
-    });
     // Invitado: hueco para el anfitrión desde ya (se sustituye al llegar su
     // oferta). Así, si no llega nunca, se sigue por el relé y se sabe cuándo se va.
     if (!isHost) {
@@ -61,8 +52,30 @@ G.Net = (() => {
 
   function close() {
     for (const u of [...peers.keys()]) drop(u);
-    if (qref) { qref.off(); qref = null; }
+    clearTimeout(flushT); flushT = 0; outbox = [];
     roomId = null; isHost = false; hostUid = null;
+  }
+
+  /**
+   * Mensajes que trae G.Social al preguntar por la sala ([{ id, f, b }]).
+   * → false si no son de esta sala (no se dan por recibidos).
+   */
+  function receive(id, msgs) {
+    if (!roomId || id !== roomId) return false;
+    for (const raw of msgs) {
+      let m;
+      try { m = JSON.parse(raw.b); } catch (e) { continue; }
+      if (!m) continue;
+      if (m.sig) onSignal(raw.f, m.sig);
+      else deliver(raw.f, m.d);
+    }
+    return true;
+  }
+
+  /** ¿Hace falta preguntar a menudo? (conectando o algún compañero por el relé) */
+  function wantsFast() {
+    for (const p of peers.values()) if (p.mode === 'connecting' || p.mode === 'relay') return true;
+    return false;
   }
 
   /** El anfitrión llama a esto cuando cambian los miembros de la sala. */
@@ -154,7 +167,10 @@ G.Net = (() => {
     }
   }
 
-  function signal(to, sig) { relayPush(to, { f: uid, sig }); }
+  function signal(to, sig) {
+    relayPush(to, { sig });
+    if (G.Social.roomNudge) G.Social.roomNudge();       // la respuesta llega antes
+  }
 
   function drop(u, silent) {
     const p = peers.get(u);
@@ -170,8 +186,17 @@ G.Net = (() => {
   // ---------------- envío / recepción ----------------
 
   function relayPush(to, env) {
-    if (!rtdb || !roomId) return;
-    rtdb.ref('rooms/' + roomId + '/q/' + to).push(JSON.stringify(env)).catch(e => console.warn('[Net] relé:', e.code || e.message));
+    if (!roomId) return;
+    outbox.push({ to, b: JSON.stringify(env) });
+    if (!flushT) flushT = setTimeout(flush, FLUSH);
+  }
+
+  function flush() {
+    flushT = 0;
+    if (!roomId || !outbox.length) return;
+    const msgs = outbox.splice(0, 200);
+    G.DB.api('roomSend', { id: roomId, msgs }).catch(e => console.warn('[Net] relé:', e.code || e.message));
+    if (outbox.length) flushT = setTimeout(flush, FLUSH);
   }
 
   function send(to, msg) {
@@ -182,7 +207,7 @@ G.Net = (() => {
       try { p.dc.send(JSON.stringify(msg)); return; } catch (e) { /* cae al relé */ }
     }
     stats.relaySent++;
-    relayPush(to, { f: uid, d: msg });
+    relayPush(to, { d: msg });
   }
 
   function toHost(msg) { if (!isHost && hostUid) send(hostUid, msg); }
@@ -194,7 +219,7 @@ G.Net = (() => {
   }
 
   return {
-    open, close, syncMembers, send, toHost, broadcast,
+    open, close, syncMembers, send, toHost, broadcast, receive, wantsFast,
     on(fn) { handlers.add(fn); }, off(fn) { handlers.delete(fn); },
     onPeer(fn) { peerHandlers.add(fn); },
     mode(u) { const p = peers.get(u); return p ? p.mode : 'closed'; },

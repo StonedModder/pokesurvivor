@@ -52,7 +52,7 @@ G.LoginUI = (() => {
     G.UI.chrome(false);
     G.UI.show('scr-login');
     if (!G.DB.storageOk) $('login-err').textContent = 'Este navegador no deja guardar datos: juega como invitado.';
-    $('btn-google').classList.toggle('hidden', G.DB.mode !== 'cloud');
+    $('btn-google').classList.toggle('hidden', G.DB.mode !== 'cloud' || !G.DB.google);
     $('login-mode').textContent = modeNote();
     setTimeout(() => $('f-user').focus(), 50);
   }
